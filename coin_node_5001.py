@@ -1,4 +1,4 @@
-# Module 1 - Create a Blockchain
+# Module 2 - Create a Cryptocurrency
 
 # To be installed:
 # Flask==0.12.2: pip install Flask==0.12.2
@@ -8,16 +8,22 @@
 import datetime
 import hashlib
 import json
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
+import requests
+from uuid import uuid4
+from urllib.parse import urlparse
 
 
 # Part 1 - Building a Blockchain
 # Flow: Define a chain, create genesis block and new blocks, make sure to have a solid blockchain
+# !! Transactions make the Blockchain to be a cryptocurrency !!
 class Blockchain:
     # Always start with a init method in a class
     def __init__(self):
         # Chain that contains all the blocks in blockchain
         self.chain = []
+        self.transactions = []
+        self.nodes = set()
         self.create_block(proof=1, previous_hash="0")
 
     def create_block(self, proof, previous_hash):
@@ -25,8 +31,10 @@ class Blockchain:
             "index": len(self.chain) + 1,
             "timestamp": str(datetime.datetime.now()),
             "proof": proof,
-            "previous_hash": previous_hash
+            "previous_hash": previous_hash,
+            "transactions": self.transactions
         }
+        self.transactions = []
         self.chain.append(block)
         return block
 
@@ -55,7 +63,7 @@ class Blockchain:
         encoded_block = hashlib.sha256(json.dumps(block, sort_keys=True).encode()).hexdigest()
         return encoded_block
 
-    def is_blockchain_valid(self, chain):
+    def is_chain_valid(self, chain):
         # Starting the check up from the first block
         previous_block = chain[0]
         block_index = 1
@@ -74,17 +82,48 @@ class Blockchain:
             block_index += 1
         return True
 
+    def add_transaction(self, sender, receiver, amount):
+        self.transactions.append({
+            "sender": sender,
+            "receiver": receiver,
+            "amount": amount,
+        })
+        previous_block = self.get_previous_block()
+        return previous_block["index"] + 1
+
+    def add_node(self, address):
+        parsed_url=urlparse(address)
+        self.nodes.add(parsed_url.netloc)
+
+    def longest_chain(self):
+        network = self.nodes
+        longest_chain = None
+        max_length = len(self.chain)
+        for node in network:
+            response = requests.get(f'http://{node}/get_chain')
+            if response.status_code == 200:
+                length = response.json()['length']
+                chain = response.json()['chain']
+                if length > max_length and self.is_chain_valid(chain):
+                    max_length = length
+                    longest_chain = chain
+        if longest_chain:
+            self.chain = longest_chain
+            return True
+        return False
 
 # Part 2 - Mining a Blockchain
 
 # Creating a app using Flask framework
 app = Flask(__name__)
 
+# Creating address for the Node using uuid4 that will generate random, unique address
+node_address = str(uuid4()).replace('-','')
+
 # Making an instance/object of Blockchain defined class
 blockchain = Blockchain()
 
 # Setting up routes
-
 # Mining a new block
 @app.route('/mine_block', methods=['GET'])
 def mine_block():
@@ -92,6 +131,7 @@ def mine_block():
     previous_hash = blockchain.hash(previous_block)
     previous_proof = previous_block['proof']
     proof = blockchain.proof_of_work(previous_proof)
+    blockchain.add_transaction(sender=node_address, receiver="Kazic", amount=2)
     # New block created
     block = blockchain.create_block(proof, previous_hash)
     current_hash = blockchain.hash(block)
@@ -100,7 +140,8 @@ def mine_block():
                 'timestamp': block['timestamp'],
                 'proof': block['proof'],
                 'hash': current_hash,
-                'previous_hash': block['previous_hash']}
+                'previous_hash': block['previous_hash'],
+                'transactions': block['transactions']}
     return jsonify(response), 200
 
 
@@ -117,13 +158,53 @@ def get_chain():
 # Check if the Blockchain is valid
 @app.route('/get_validation', methods=['GET'])
 def get_validation():
-    if (blockchain.is_blockchain_valid(blockchain.chain)):
+    if (blockchain.is_chain_valid(blockchain.chain)):
         response = {"message": "Valid"}
     else:
         response = {"message": "Invalid"}
     return jsonify(response), 200
 
+# Adding a new transaction to Blockchain
+@app.route('/add_transaction', methods=['POST'])
+def add_transaction():
+    # Get the information about sender, receiver and amount from Postman
+    json_postman = request.get_json()
+    transaction_keys = ['sender', 'receiver', 'amount']
+    if not all (key in json_postman for key in transaction_keys):
+        return "Something went wrong", 400
+    index = blockchain.add_transaction(json_postman['sender'],json_postman['receiver'], json_postman['amount'])
+    response = {'message': f'This transaction will be added to Block {index}'}
+    return jsonify(response), 201
+
+# Part 3 - Decentralizing the Blockchain
+
+# Connecting new nodes
+@app.route('/connect_node', methods=['POST'])
+def connect_nodes():
+    json_postman = request.get_json()
+    nodes = json_postman['node_addresses']
+    if nodes is None:
+        return "Node not found", 400
+    else:
+        for node in nodes:
+            blockchain.add_node(node)
+    response = {'message': 'Nodes connected. The Coin Blockchain contains these nodes:',
+                'total_nodes': list(blockchain.nodes)}
+    return jsonify(response), 201
+
+# Replacing the chain by the longest chain if needed
+@app.route('/replace_chain', methods = ['GET'])
+def replace_chain():
+    is_chain_replaced = blockchain.longest_chain()
+    if is_chain_replaced:
+        response = {'message': 'The nodes had different chains so the chain was replaced by the longest one.',
+                    'new_chain': blockchain.chain}
+    else:
+        response = {'message': 'All good. The chain is the largest one.',
+                    'actual_chain': blockchain.chain}
+    return jsonify(response), 200
+
 
 # Running the app
 if __name__ == '__main__':
-    app.run(port=5000)
+    app.run(port=5001)
